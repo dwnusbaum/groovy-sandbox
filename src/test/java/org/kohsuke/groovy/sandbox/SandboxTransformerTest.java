@@ -24,9 +24,7 @@
 
 package org.kohsuke.groovy.sandbox;
 
-import groovy.lang.Binding;
 import groovy.lang.EmptyRange;
-import groovy.lang.GroovyShell;
 import groovy.lang.IntRange;
 import groovy.lang.ObjectRange;
 import java.io.File;
@@ -39,206 +37,18 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Pattern;
-import org.codehaus.groovy.control.CompilerConfiguration;
-import org.codehaus.groovy.control.customizers.ImportCustomizer;
-import org.junit.Before;
 import org.junit.Ignore;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ErrorCollector;
 import org.jvnet.hudson.test.Issue;
-import org.kohsuke.groovy.sandbox.impl.GroovyCallSiteSelector;
 
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.contains;
-import static org.hamcrest.Matchers.matchesPattern;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
-import org.hamcrest.Matcher;
 
-public class SandboxTransformerTest {
-    public @Rule ErrorCollector ec = new ErrorCollector();
-    public Binding binding = new Binding();
-    public GroovyShell sandboxedSh;
-    public GroovyShell unsandboxedSh;
-    public ClassRecorder cr = new ClassRecorder();
-
-    @Before
-    public void setUp() {
-        CompilerConfiguration cc = new CompilerConfiguration();
-        cc.addCompilationCustomizers(new ImportCustomizer().addImports(SandboxTransformerTest.class.getName()).addStarImports("org.kohsuke.groovy.sandbox"));
-        cc.addCompilationCustomizers(new SandboxTransformer());
-        sandboxedSh = new GroovyShell(binding,cc);
-
-        cc = new CompilerConfiguration();
-        cc.addCompilationCustomizers(new ImportCustomizer().addImports(SandboxTransformerTest.class.getName()).addStarImports("org.kohsuke.groovy.sandbox"));
-        unsandboxedSh = new GroovyShell(binding,cc);
-    }
-
-    public void configureBinding() { }
-
-    /**
-     * Use {@code ShouldFail.class} as the expected result for {@link #sandboxedEval} and {@link #unsandboxedEval}
-     * when the expression is expected to throw an exception.
-     */
-    public static final class ShouldFail { }
-
-    @FunctionalInterface
-    public interface ExceptionHandler {
-        public void handleException(Throwable e) throws Exception;
-    }
-
-    /**
-     * Executes a Groovy expression inside of the sandbox.
-     * @param expression The Groovy expression to execute.
-     */
-    public void sandboxedEval(String expression, Object expectedResult, ExceptionHandler handler) {
-        cr.reset();
-        cr.register();
-        try {
-            configureBinding();
-            Object actual = sandboxedSh.evaluate(expression);
-            String actualType = GroovyCallSiteSelector.getName(actual);
-            String expectedType = GroovyCallSiteSelector.getName(expectedResult);
-            ec.checkThat("Sandboxed result (" + actualType + ") does not match expected result (" + expectedType + ")", actual, equalTo(expectedResult));
-        } catch (Throwable e) {
-            ec.checkSucceeds(() -> {
-                try {
-                    handler.handleException(e);
-                } catch (Throwable t) {
-                    t.addSuppressed(e); // Keep the original error around in case an assertion fails in the handler.
-                    throw t;
-                }
-                return null;
-            });
-        } finally {
-            cr.unregister();
-        }
-    }
-
-    /**
-     * Executes a Groovy expression outside of the sandbox.
-     * @param expression The Groovy expression to execute.
-     */
-    private void unsandboxedEval(String expression, Object expectedResult, ExceptionHandler handler) {
-        try {
-            configureBinding();
-            Object actual = unsandboxedSh.evaluate(expression);
-            String actualType = GroovyCallSiteSelector.getName(actual);
-            String expectedType = GroovyCallSiteSelector.getName(expectedResult);
-            ec.checkThat("Unsandboxed result (" + actualType + ") does not match expected result (" + expectedType + ")", actual, equalTo(expectedResult));
-        } catch (Exception e) {
-            ec.checkSucceeds(() -> {
-                handler.handleException(e);
-                return null;
-            });
-        }
-    }
-
-    /**
-     * Execute a Groovy expression both in and out of the sandbox and check that the return value matches the
-     * expected value and that the given list of method calls are intercepted by the sandbox.
-     * @param expression The Groovy expression to execute.
-     * @param expectedReturnValue The expected return value for running the script.
-     * @param expectedCalls The method calls that are expected to be intercepted by the sandbox.
-     */
-    public void assertIntercept(String expression, Object expectedReturnValue, String... expectedCalls) {
-        assertEvaluate(expression, expectedReturnValue);
-        assertIntercepted(expectedCalls);
-    }
-
-    /**
-     * Check that the most recently executed expression intercepted the expected calls.
-     * Automatically adds {@code new Script(Binding)} to the list of intercepted calls.
-     * @param expectedCalls The method calls that were expected to be intercepted by the sandbox.
-     * @see #assertInterceptedExact
-     */
-    public void assertIntercepted(String... expectedCalls) {
-        // Workaround to avoid having to update all existing tests.
-        String[] updatedExpectedCalls = expectedCalls;
-        if (expectedCalls.length == 0 || (expectedCalls.length > 0 && !expectedCalls[0].equals("new Script(Binding)"))) {
-            updatedExpectedCalls = new String[expectedCalls.length + 1];
-            updatedExpectedCalls[0] = "new Script(Binding)";
-            System.arraycopy(expectedCalls, 0, updatedExpectedCalls, 1, expectedCalls.length);
-        }
-        assertInterceptedExact(updatedExpectedCalls);
-    }
-
-    /**
-     * Check that the most recently executed expression intercepted the expected calls.
-     * @param expectedCalls The method calls that were expected to be intercepted by the sandbox.
-     */
-    @SuppressWarnings("unchecked")
-    public void assertInterceptedExact(String... expectedCalls) {
-        String[] interceptedCalls = cr.toString().split("\n");
-        if (interceptedCalls.length == 1 && interceptedCalls[0].equals("")) {
-            interceptedCalls = new String[0];
-        }
-
-        // Create matchers for each expected call with flexible proxy matching
-        Matcher<String>[] matchers = new Matcher[expectedCalls.length];
-        for (int i = 0; i < expectedCalls.length; i++) {
-            matchers[i] = createFlexibleCallMatcher(expectedCalls[i]);
-        }
-
-        ec.checkThat(Arrays.asList(interceptedCalls), contains(matchers));
-    }
-
-    /**
-     * Creates a matcher that can handle flexible matching for proxy class names.
-     * For calls containing _groovyProxy, it matches the pattern ignoring numeric IDs before _groovyProxy.
-     * For other calls, it matches exactly.
-     */
-    private Matcher<String> createFlexibleCallMatcher(String expectedCall) {
-        if (expectedCall.contains("_groovyProxy")) {
-            String[] parts = expectedCall.split("_groovyProxy", 2);
-            String prefixWithNumber = parts[0];
-            String suffix = "_groovyProxy" + parts[1];
-            String prefix = prefixWithNumber.replaceAll("\\d+$", "");
-            String pattern = Pattern.quote(prefix) + "\\d+" + Pattern.quote(suffix);
-            return matchesPattern(pattern);
-        }
-        return equalTo(expectedCall);
-    }
-
-    /**
-     * Execute a Groovy expression both in and out of the sandbox and check that the return value matches the
-     * expected value.
-     * @param expression The Groovy expression to execute.
-     * @param expectedReturnValue The expected return value for running the script.
-     */
-    public void assertEvaluate(String expression, Object expectedReturnValue) {
-        sandboxedEval(expression, expectedReturnValue, e -> {
-            throw new RuntimeException("Failed to evaluate sandboxed expression: " + expression, e);
-        });
-        unsandboxedEval(expression, expectedReturnValue, e -> {
-            throw new RuntimeException("Failed to evaluate unsandboxed expression: " + expression, e);
-        });
-    }
-
-    /**
-     * Execute a Groovy expression both in and out of the sandbox and check that the script throws an exception with
-     * the same class and message in both cases.
-     * @param expression The Groovy expression to execute.
-     */
-    private void assertFailsWithSameException(String expression) {
-        AtomicReference<Throwable> sandboxedException = new AtomicReference<>();
-        sandboxedEval(expression, ShouldFail.class, sandboxedException::set);
-        AtomicReference<Throwable> unsandboxedException = new AtomicReference<>();
-        unsandboxedEval(expression, ShouldFail.class, unsandboxedException::set);
-        if (sandboxedException.get() == null || unsandboxedException.get() == null) {
-            return; // Either sandboxedEval or unsandboxedEval will have already recorded an error because the result was not ShouldFail.
-        }
-        ec.checkThat("Sandboxed and unsandboxed exception should have the same type",
-                unsandboxedException.get().getClass(), equalTo(sandboxedException.get().getClass()));
-        ec.checkThat("Sandboxed and unsandboxed exception should have the same message",
-                unsandboxedException.get().getMessage(), equalTo(sandboxedException.get().getMessage()));
-    }
+public class SandboxTransformerTest extends AbstractSandboxTest {
 
     @Issue("SECURITY-1465")
     @Test public void sandboxTransformsMethodPointerLhs() throws Exception {

@@ -22,7 +22,7 @@ import static org.junit.Assert.assertEquals;
  *
  * @author Kohsuke Kawaguchi
  */
-public class TheTest extends SandboxTransformerTest {
+public class TheTest extends AbstractSandboxTest {
     @Override
     public void configureBinding() {
         binding.setProperty("foo", "FOO");
