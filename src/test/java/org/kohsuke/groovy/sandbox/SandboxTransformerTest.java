@@ -537,6 +537,17 @@ public class SandboxTransformerTest extends AbstractSandboxTest {
                 "SandboxTransformerTest$OperatorOverloader.value",
                 "ArrayList.add(Integer)",
                 "ArrayList.addAll(ArrayList)");
+        assertIntercept(
+                "def auditLog = []\n" +
+                "def list = (1..1).toList()\n" +
+                "def list2 = (1..<1).toList()\n" +
+                "[list, list2]",
+                Arrays.asList(Arrays.asList(1), Arrays.asList()),
+                "new IntRange(Boolean,Integer,Integer)",
+                "IntRange.toList()",
+                "Integer.compareTo(Integer)",
+                "new EmptyRange(Integer)",
+                "EmptyRange.toList()");
     }
 
     @Test public void unaryExpressionsSmoke() {
