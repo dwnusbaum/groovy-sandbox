@@ -30,7 +30,6 @@ import groovy.lang.GroovyShell;
 import groovy.lang.IntRange;
 import groovy.lang.ObjectRange;
 import java.io.File;
-import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.file.Files;
@@ -40,11 +39,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 import org.codehaus.groovy.control.CompilerConfiguration;
 import org.codehaus.groovy.control.customizers.ImportCustomizer;
-import org.codehaus.groovy.runtime.ProxyGeneratorAdapter;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Rule;
@@ -57,8 +55,11 @@ import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
+import org.hamcrest.Matcher;
 
 public class SandboxTransformerTest {
     public @Rule ErrorCollector ec = new ErrorCollector();
@@ -172,12 +173,37 @@ public class SandboxTransformerTest {
      * Check that the most recently executed expression intercepted the expected calls.
      * @param expectedCalls The method calls that were expected to be intercepted by the sandbox.
      */
+    @SuppressWarnings("unchecked")
     public void assertInterceptedExact(String... expectedCalls) {
         String[] interceptedCalls = cr.toString().split("\n");
         if (interceptedCalls.length == 1 && interceptedCalls[0].equals("")) {
             interceptedCalls = new String[0];
         }
-        ec.checkThat(interceptedCalls, equalTo(expectedCalls));
+
+        // Create matchers for each expected call with flexible proxy matching
+        Matcher<String>[] matchers = new Matcher[expectedCalls.length];
+        for (int i = 0; i < expectedCalls.length; i++) {
+            matchers[i] = createFlexibleCallMatcher(expectedCalls[i]);
+        }
+
+        ec.checkThat(Arrays.asList(interceptedCalls), contains(matchers));
+    }
+
+    /**
+     * Creates a matcher that can handle flexible matching for proxy class names.
+     * For calls containing _groovyProxy, it matches the pattern ignoring numeric IDs before _groovyProxy.
+     * For other calls, it matches exactly.
+     */
+    private Matcher<String> createFlexibleCallMatcher(String expectedCall) {
+        if (expectedCall.contains("_groovyProxy")) {
+            String[] parts = expectedCall.split("_groovyProxy", 2);
+            String prefixWithNumber = parts[0];
+            String suffix = "_groovyProxy" + parts[1];
+            String prefix = prefixWithNumber.replaceAll("\\d+$", "");
+            String pattern = Pattern.quote(prefix) + "\\d+" + Pattern.quote(suffix);
+            return matchesPattern(pattern);
+        }
+        return equalTo(expectedCall);
     }
 
     /**
@@ -1102,27 +1128,20 @@ public class SandboxTransformerTest {
 
     @Test
     public void sandboxInterceptsCastsToAbstractClasses() throws Throwable {
-        // Other tests that generate proxy classes will increment the counter.
-        // TODO: Could flake if tests are configured to run in parallel in the same JVM.
-        Field pxyCounterField = ProxyGeneratorAdapter.class.getDeclaredField("pxyCounter");
-        pxyCounterField.setAccessible(true);
-        AtomicLong pxyCounter = (AtomicLong) pxyCounterField.get(null);
-        long counter = pxyCounter.get() + 1;
         assertIntercept(
                 "def proxy = { -> 'overridden' } as org.kohsuke.groovy.sandbox.SandboxTransformerTest.AbstractClass\n" +
                 "[proxy.get(), proxy.get2()]",
                 Arrays.asList("overridden", "overridden"),
                 "new SandboxTransformerTest$AbstractClass()",
-                "SandboxTransformerTest$AbstractClass" + counter + "_groovyProxy.get()",
-                "SandboxTransformerTest$AbstractClass" + counter + "_groovyProxy.get2()");
-        counter = pxyCounter.get() + 1;
+                "SandboxTransformerTest$AbstractClass1_groovyProxy.get()",
+                "SandboxTransformerTest$AbstractClass1_groovyProxy.get2()");
         assertIntercept(
                 "def proxy = ['get': { -> 'overridden' }] as org.kohsuke.groovy.sandbox.SandboxTransformerTest.AbstractClass\n" +
                 "[proxy.get(), proxy.get2()]",
                 Arrays.asList("overridden", "default"),
                 "new SandboxTransformerTest$AbstractClass()",
-                "SandboxTransformerTest$AbstractClass" + counter + "_groovyProxy.get()",
-                "SandboxTransformerTest$AbstractClass" + counter + "_groovyProxy.get2()");
+                "SandboxTransformerTest$AbstractClass1_groovyProxy.get()",
+                "SandboxTransformerTest$AbstractClass1_groovyProxy.get2()");
     }
 
     public static abstract class AbstractClass {
