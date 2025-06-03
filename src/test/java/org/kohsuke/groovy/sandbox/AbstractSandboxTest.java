@@ -38,7 +38,7 @@ import org.kohsuke.groovy.sandbox.impl.GroovyCallSiteSelector;
 import org.hamcrest.Matcher;
 
 import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.arrayContaining;
 import static org.hamcrest.Matchers.matchesPattern;
 
 /**
@@ -169,7 +169,7 @@ public abstract class AbstractSandboxTest {
             matchers[i] = createFlexibleCallMatcher(expectedCalls[i]);
         }
 
-        ec.checkThat(Arrays.asList(interceptedCalls), contains(matchers));
+        ec.checkThat("Actual calls: " + Arrays.toString(interceptedCalls), interceptedCalls, arrayContaining(matchers));
     }
 
     /**

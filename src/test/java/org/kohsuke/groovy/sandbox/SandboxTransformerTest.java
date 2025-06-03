@@ -397,6 +397,23 @@ public class SandboxTransformerTest extends AbstractSandboxTest {
     }
 
     @Issue("SECURITY-1754")
+    @Test public void blocksUnintendedCallsToNonSyntheticConstructors2() throws Exception {
+        sandboxedEval(
+                "class Base { }\n" +
+                "class Subclass extends Base { }\n" + // Subclass needed to break ties for specificity compared to ThisConstructorWrapper matching Object
+                "class Test {\n" +
+                "  Object tcw\n" +
+                "  Test(Object o) { this(o, o) }\n" +
+                "  Test(Object o, Subclass f) { tcw = o }\n" +
+                "}\n" +
+                "new Test(new Subclass()).tcw",
+                ShouldFail.class,
+                e -> assertThat(e.getMessage(), equalTo(
+                        "Rejecting unexpected invocation of constructor: public Test(java.lang.Object,Subclass). " +
+                        "Expected to invoke synthetic constructor: private Test(org.kohsuke.groovy.sandbox.impl.Checker$ThisConstructorWrapper,java.lang.Object)")));
+    }
+
+    @Issue("SECURITY-1754")
     @Test public void localVarsInIfStatementsAreNotInScopeInElseStatements() throws Exception {
         sandboxedEval(
                 "class Super { }\n" +
@@ -520,7 +537,7 @@ public class SandboxTransformerTest extends AbstractSandboxTest {
                 Arrays.asList(1, 2, 3, "compareTo", "compareTo", "previous", "compareTo", "compareTo", "next", "compareTo", "compareTo", "next", "compareTo", "compareTo", "next", "compareTo", "compareTo", "next", "next"),
                 "new SandboxTransformerTest$OperatorOverloader(ArrayList,Integer)",
                 "new SandboxTransformerTest$OperatorOverloader(ArrayList,Integer)",
-                // These next 10 interceptions are from Checker.checkedRange and Checker.checkedComparison.
+                // These next 10 interceptions are from Checker.checkedCreateRange and Checker.checkedComparison.
                 "SandboxTransformerTest$OperatorOverloader.compareTo(SandboxTransformerTest$OperatorOverloader)",
                 "SandboxTransformerTest$OperatorOverloader.compareTo(SandboxTransformerTest$OperatorOverloader)",
                 "SandboxTransformerTest$OperatorOverloader.previous()",
@@ -856,12 +873,23 @@ public class SandboxTransformerTest extends AbstractSandboxTest {
     @Test
     public void sandboxInterceptsAttributeExpressionsInPrefixPostfixOps() {
         assertIntercept(
-                "class Test { int x }\n" +
+                "class Test { int x; int y }\n" +
                 "def t = new Test()\n" +
-                "t.@x++\n" +
-                "t.@x\n",
-                1,
-                "new Test()", "Test.@x", "Integer.next()", "Test.@x=Integer", "Test.@x");
+                "def x1 = t.@x++ + 1\n" +
+                "def y1 = --t.@y - 1\n" +
+                "[t.@x, x1, t.@y, y1]\n",
+                Arrays.asList(1, 1, -1, -2),
+                "new Test()",
+                "Test.@x",
+                "Integer.next()",
+                "Test.@x=Integer",
+                "Integer.plus(Integer)",
+                "Test.@y",
+                "Integer.previous()",
+                "Test.@y=Integer",
+                "Integer.minus(Integer)",
+                "Test.@x",
+                "Test.@y");
     }
 
     @Test
@@ -954,6 +982,7 @@ public class SandboxTransformerTest extends AbstractSandboxTest {
                 "[proxy.get(), proxy.get2()]",
                 Arrays.asList("overridden", "overridden"),
                 "new SandboxTransformerTest$AbstractClass()",
+                "new SandboxTransformerTest$AbstractClass(Integer)",
                 "SandboxTransformerTest$AbstractClass1_groovyProxy.get()",
                 "SandboxTransformerTest$AbstractClass1_groovyProxy.get2()");
         assertIntercept(
@@ -961,11 +990,16 @@ public class SandboxTransformerTest extends AbstractSandboxTest {
                 "[proxy.get(), proxy.get2()]",
                 Arrays.asList("overridden", "default"),
                 "new SandboxTransformerTest$AbstractClass()",
+                "new SandboxTransformerTest$AbstractClass(Integer)",
                 "SandboxTransformerTest$AbstractClass1_groovyProxy.get()",
                 "SandboxTransformerTest$AbstractClass1_groovyProxy.get2()");
     }
 
     public static abstract class AbstractClass {
+        public AbstractClass() {}
+        public AbstractClass(int x) {
+            // Unused, but intercepted
+        }
         public abstract Object get();
         public Object get2() {
             return "default";
@@ -1159,6 +1193,82 @@ public class SandboxTransformerTest extends AbstractSandboxTest {
                 "  }\n" +
                 "}\n" +
                 "new Test([:]).map\n");
+    }
+
+    @Test
+    public void spreadOperator() throws Exception {
+        assertIntercept(
+                "def list = ['a', null, 'bc']\n" +
+                "list*.length()",
+                Arrays.asList(1, null, 2),
+                "String.length()",
+                "String.length()");
+    }
+
+    @Test
+    public void directCallsToMethodsWithCheckedReplacements() {
+        assertIntercept(
+                "import org.codehaus.groovy.runtime.InvokerHelper\n" +
+                "def o = new SandboxTransformerTest$OperatorOverloader([], 2)\n" +
+                "[\n" +
+                "  InvokerHelper.bitwiseNegate(o),\n"+
+                "  InvokerHelper.unaryMinus(o),\n" +
+                "  InvokerHelper.unaryPlus(o)\n" +
+                "]\n",
+                Arrays.asList(-3, -2, 2),
+                "new SandboxTransformerTest$OperatorOverloader(ArrayList,Integer)",
+                "SandboxTransformerTest$OperatorOverloader.bitwiseNegate()",
+                "SandboxTransformerTest$OperatorOverloader.negative()",
+                "SandboxTransformerTest$OperatorOverloader.positive()");
+        assertIntercept(
+                "import org.codehaus.groovy.runtime.ScriptBytecodeAdapter\n" +
+                "def o = new SandboxTransformerTest$OperatorOverloader([], 3)\n" +
+                "[\n" +
+                "  ScriptBytecodeAdapter.bitwiseNegate(o),\n" +
+                "  ScriptBytecodeAdapter.unaryMinus(o),\n" +
+                "  ScriptBytecodeAdapter.unaryPlus(o)\n" +
+                "]\n",
+                Arrays.asList(-4, -3, 3),
+                "new SandboxTransformerTest$OperatorOverloader(ArrayList,Integer)",
+                "SandboxTransformerTest$OperatorOverloader.bitwiseNegate()",
+                "SandboxTransformerTest$OperatorOverloader.negative()",
+                "SandboxTransformerTest$OperatorOverloader.positive()");
+    }
+
+    @Test
+    public void switchStatementIntercepted() throws Exception {
+        assertIntercept(
+            "switch (String.valueOf(1)) {\n" +
+            "  case Integer:\n" +
+            "    return 'one'\n" +
+            "  case { it.length() == 2 }:\n" +
+            "    return 'two'\n" +
+            "  case ~/y/:\n" +
+            "    return 'three'\n" +
+            "  case Integer.&valueOf:\n" +
+            "    return 'four'\n" +
+            "}\n",
+            "four",
+            "String:valueOf(Integer)",
+            "String.length()",
+            "Integer.compareTo(Integer)",
+            "StringGroovyMethods:bitwiseNegate(String)",
+            "Integer:valueOf(String)");
+    }
+
+    @Test
+    public void whileLoopBodyIntercepted() throws Exception {
+        assertIntercept(
+            "def x = 0\n" +
+            "while (x < 1) {\n" +
+            "  x += 'abc'.length()\n" +
+            "}\n" +
+            "x",
+            3,
+            "Integer.compareTo(Integer)",
+            "String.length()",
+            "Integer.compareTo(Integer)"
+        );
     }
 
 }
